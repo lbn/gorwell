@@ -7,9 +7,11 @@ import (
 	"log"
 	"os"
 	"path"
+	"strings"
 
 	"golang.org/x/crypto/openpgp"
 	"golang.org/x/crypto/openpgp/armor"
+	"golang.org/x/crypto/openpgp/packet"
 	"golang.org/x/crypto/ssh/terminal"
 )
 
@@ -115,6 +117,33 @@ func ToArmor(secret []byte, blockType BlockType) []byte {
 		panic(err)
 	}
 	w.Close()
+	bytes, _ := ioutil.ReadAll(buf)
+	return bytes
+}
+
+type PGPClient struct {
+	Entities openpgp.EntityList
+}
+
+func PublicKeyToPGPClient(publicKey string) PGPClient {
+	block, err := armor.Decode(strings.NewReader(publicKey))
+	if err != nil {
+		panic(err)
+	}
+	entity, err := openpgp.ReadEntity(packet.NewReader(block.Body))
+	if err != nil {
+		panic(err)
+	}
+	return PGPClient{openpgp.EntityList{entity}}
+}
+
+func (pgpClient PGPClient) Encrypt(data []byte) []byte {
+	// encrypt string
+	buf := new(bytes.Buffer)
+	w, _ := openpgp.Encrypt(buf, pgpClient.Entities, nil, nil, nil)
+	w.Write(data)
+	w.Close()
+
 	bytes, _ := ioutil.ReadAll(buf)
 	return bytes
 }
