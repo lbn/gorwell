@@ -2,13 +2,13 @@ package gorwell
 
 import (
 	"bytes"
-	"encoding/base64"
+	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"path"
 	"strings"
 
+	log "github.com/Sirupsen/logrus"
 	"golang.org/x/crypto/openpgp"
 	"golang.org/x/crypto/openpgp/armor"
 	"golang.org/x/crypto/openpgp/packet"
@@ -33,7 +33,7 @@ func NewPGP() PGP {
 	// Keyring
 	keyringFileBuffer, err := os.Open(path.Join(gnupg, "secring.gpg"))
 	if err != nil {
-		log.Println(err)
+		log.Fatal(err)
 	}
 	privateEntities, err := openpgp.ReadKeyRing(keyringFileBuffer)
 	defer keyringFileBuffer.Close()
@@ -41,7 +41,7 @@ func NewPGP() PGP {
 	// Keyring
 	publicKeyringFile, err := os.Open(path.Join(gnupg, "pubring.gpg"))
 	if err != nil {
-		log.Println(err)
+		log.Fatal(err)
 	}
 	publicEntities, err := openpgp.ReadKeyRing(publicKeyringFile)
 	for _, entity := range publicEntities {
@@ -53,7 +53,7 @@ func NewPGP() PGP {
 }
 
 func (client PGP) DecryptEntity() {
-	log.Println("Enter passphrase:")
+	fmt.Println("Enter passphrase:")
 	pw, _ := terminal.ReadPassword(0)
 
 	// Decrypt private key
@@ -63,17 +63,14 @@ func (client PGP) DecryptEntity() {
 		subkey.PrivateKey.Decrypt(pw)
 	}
 
-	log.Println("Identities")
+	log.Debug("Identities:")
 	for _, id := range client.PrivateEntities[0].Identities {
-		log.Printf("Name: %s | Email: %s\n", id.UserId.Name, id.UserId.Email)
+		log.Debug("Name: %s | Email: %s\n", id.UserId.Name, id.UserId.Email)
 	}
 }
 
 func (client PGP) DecryptBytes(esecret []byte) []byte {
-	log.Println(base64.StdEncoding.EncodeToString(esecret))
-
 	md, err := openpgp.ReadMessage(bytes.NewBuffer(esecret), client.PrivateEntities, nil, nil)
-	log.Println(md == nil)
 	if err != nil {
 		panic(err)
 	}
@@ -95,15 +92,15 @@ func (client PGP) EncryptBytes(secret []byte, target openpgp.EntityList) []byte 
 	return bytes
 }
 
-func (client PGP) ExportPublicKey() []byte {
+func (client PGP) PublicKey() []byte {
 	buf := new(bytes.Buffer)
-	client.PublicEntities[0].PrimaryKey.Serialize(buf)
+	client.PublicEntities[0].Serialize(buf)
 	bytes, _ := ioutil.ReadAll(buf)
 	return bytes
 }
 
-func (client PGP) ExportFingerprint() [20]byte {
-	return client.PublicEntities[0].PrimaryKey.Fingerprint
+func (client PGP) Fingerprint() []byte {
+	return client.PublicEntities[0].PrimaryKey.Fingerprint[:]
 }
 
 func ToArmor(secret []byte, blockType BlockType) []byte {
@@ -146,4 +143,8 @@ func (pgpClient PGPClient) Encrypt(data []byte) []byte {
 
 	bytes, _ := ioutil.ReadAll(buf)
 	return bytes
+}
+
+func (pgpClient PGPClient) Fingerprint() []byte {
+	return pgpClient.Entities[0].PrimaryKey.Fingerprint[:]
 }

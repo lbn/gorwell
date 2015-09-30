@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"io"
-	"log"
 	"net/http"
 
+	log "github.com/Sirupsen/logrus"
 	"github.com/emicklei/go-restful"
 	"github.com/lbn/gorwell"
 	_ "github.com/mattn/go-sqlite3"
@@ -32,12 +32,39 @@ func main() {
 	ws.Route(ws.POST("/identify").To(handleIdentify).
 		Consumes(restful.MIME_JSON).
 		Produces(restful.MIME_JSON))
+	ws.Route(ws.POST("/register").To(handleRegister).
+		Consumes(restful.MIME_JSON).
+		Produces(restful.MIME_JSON))
 	ws.Route(ws.POST("/identify/token").To(handleIdentifyToken).
 		Consumes(restful.MIME_JSON).
 		Produces(restful.MIME_JSON))
 
 	restful.Add(ws)
-	http.ListenAndServe(":8080", nil)
+	addr := ":8080"
+	log.WithFields(log.Fields{"address": addr}).Info("Listen")
+	http.ListenAndServe(addr, nil)
+}
+
+func handleRegister(req *restful.Request, res *restful.Response) {
+	var regReq struct {
+		PublicKey string
+	}
+	req.ReadEntity(&regReq)
+
+	log.Println(regReq)
+	client := gorwell.PublicKeyToPGPClient(regReq.PublicKey)
+	fingerprint := base64.StdEncoding.EncodeToString(client.Fingerprint())
+	stmt, err := db.Prepare("INSERT INTO users (fingerprint, public_key) VALUES (?, ?)")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	_, err = stmt.Exec(fingerprint, regReq.PublicKey)
+	if err != nil {
+		res.WriteHeader(http.StatusForbidden)
+	} else {
+		res.WriteHeader(http.StatusCreated)
+	}
 }
 
 type IdentifyRequest struct {
@@ -45,7 +72,6 @@ type IdentifyRequest struct {
 }
 
 func handleIdentify(req *restful.Request, res *restful.Response) {
-	//test := make(map[string]interface{})
 	var identReq *IdentifyRequest = new(IdentifyRequest)
 	err := req.ReadEntity(identReq)
 	if err != nil {
@@ -67,6 +93,11 @@ func handleIdentify(req *restful.Request, res *restful.Response) {
 
 	var publicKey string
 	stmt.QueryRow(identReq.Fingerprint).Scan(&publicKey)
+
+	if publicKey == "" {
+		res.WriteHeader(404)
+		return
+	}
 
 	// Generate and encrypt token
 	token := make([]byte, 64)
