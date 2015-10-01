@@ -9,8 +9,8 @@ import (
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/emicklei/go-restful"
-	"github.com/lbn/gorwell"
 	_ "github.com/mattn/go-sqlite3"
+	gorwell "pkg/pgp"
 )
 
 var (

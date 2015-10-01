@@ -9,7 +9,7 @@ import (
 	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
 	"github.com/jmcvetta/napping"
-	"github.com/lbn/gorwell"
+	gorwell "pkg/pgp"
 )
 
 var client gorwell.PGP

@@ -1,4 +1,4 @@
-package gorwell
+package pgp
 
 import (
 	"bytes"
