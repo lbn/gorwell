@@ -63,9 +63,11 @@ func (client PGP) DecryptEntity() {
 		subkey.PrivateKey.Decrypt(pw)
 	}
 
-	log.Debug("Identities:")
 	for _, id := range client.PrivateEntities[0].Identities {
-		log.Debug("Name: %s | Email: %s\n", id.UserId.Name, id.UserId.Email)
+		log.WithFields(log.Fields{
+			"name":  id.UserId.Name,
+			"email": id.UserId.Email,
+		}).Debug("Found identity")
 	}
 }
 

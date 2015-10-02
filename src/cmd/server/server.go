@@ -6,19 +6,43 @@ import (
 	"encoding/base64"
 	"io"
 	"net/http"
+	"time"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/emicklei/go-restful"
+	"github.com/garyburd/redigo/redis"
 	_ "github.com/mattn/go-sqlite3"
-	gorwell "pkg/pgp"
+	"pkg/pgp"
 )
 
 var (
-	db  *sql.DB
-	pgp gorwell.PGP
+	db        *sql.DB
+	serverPGP pgp.PGP
+	pool      *redis.Pool
 )
 
+func init() {
+	log.SetLevel(log.DebugLevel)
+}
+
 func main() {
+	// Redis
+	pool = &redis.Pool{
+		MaxIdle:     3,
+		IdleTimeout: 240 * time.Second,
+		Dial: func() (redis.Conn, error) {
+			c, err := redis.Dial("tcp", ":6379")
+			if err != nil {
+				log.Fatal(err)
+			}
+			return c, err
+		},
+		TestOnBorrow: func(c redis.Conn, t time.Time) error {
+			_, err := c.Do("PING")
+			return err
+		},
+	}
+
 	var err error
 	db, err = sql.Open("sqlite3", "./users.sqlite3")
 	if err != nil {
@@ -26,13 +50,16 @@ func main() {
 	}
 	defer db.Close()
 
-	pgp = gorwell.NewPGP()
+	serverPGP = pgp.NewPGP()
 
 	ws := new(restful.WebService)
-	ws.Route(ws.POST("/identify").To(handleIdentify).
+	ws.Route(ws.POST("/register").To(handleRegister).
 		Consumes(restful.MIME_JSON).
 		Produces(restful.MIME_JSON))
-	ws.Route(ws.POST("/register").To(handleRegister).
+	ws.Route(ws.POST("/register/token").To(handleRegisterToken).
+		Consumes(restful.MIME_JSON).
+		Produces(restful.MIME_JSON))
+	ws.Route(ws.POST("/identify").To(handleIdentify).
 		Consumes(restful.MIME_JSON).
 		Produces(restful.MIME_JSON))
 	ws.Route(ws.POST("/identify/token").To(handleIdentifyToken).
@@ -51,24 +78,47 @@ func handleRegister(req *restful.Request, res *restful.Response) {
 	}
 	req.ReadEntity(&regReq)
 
-	log.Println(regReq)
-	client := gorwell.PublicKeyToPGPClient(regReq.PublicKey)
+	client := pgp.PublicKeyToPGPClient(regReq.PublicKey)
 	fingerprint := base64.StdEncoding.EncodeToString(client.Fingerprint())
-	stmt, err := db.Prepare("INSERT INTO users (fingerprint, public_key) VALUES (?, ?)")
-	if err != nil {
-		log.Fatal(err)
-	}
+	log.WithFields(log.Fields{
+		"fingerprint": fingerprint,
+	}).Debug("Received Register request")
 
-	_, err = stmt.Exec(fingerprint, regReq.PublicKey)
-	if err != nil {
-		res.WriteHeader(http.StatusForbidden)
-	} else {
-		res.WriteHeader(http.StatusCreated)
-	}
+	conn := pool.Get()
+	defer conn.Close()
+
+	token := NewToken(regReq.PublicKey)
+
+	conn.Do("HMSET", "reg:token:"+token.Clear,
+		"fingerprint", fingerprint,
+		"public_key", regReq.PublicKey)
+
+	challenge := make(map[string]string)
+	challenge["token"] = token.Encrypted
+
+	res.WriteHeaderAndEntity(http.StatusAccepted, challenge)
 }
 
 type IdentifyRequest struct {
 	Fingerprint string
+}
+
+type Token struct {
+	Clear     string
+	Encrypted string
+}
+
+func NewToken(publicKey string) Token {
+	// Generate and encrypt token
+	token := make([]byte, 64)
+	rand.Read(token)
+	b64Token := base64.StdEncoding.EncodeToString(token)
+
+	client := pgp.PublicKeyToPGPClient(publicKey)
+
+	b64EncToken := base64.StdEncoding.EncodeToString(client.Encrypt(token))
+
+	return Token{b64Token, b64EncToken}
 }
 
 func handleIdentify(req *restful.Request, res *restful.Response) {
@@ -99,18 +149,52 @@ func handleIdentify(req *restful.Request, res *restful.Response) {
 		return
 	}
 
-	// Generate and encrypt token
-	token := make([]byte, 64)
-	rand.Read(token)
-	client := gorwell.PublicKeyToPGPClient(publicKey)
-
-	encToken := base64.StdEncoding.EncodeToString(client.Encrypt(token))
+	token := NewToken(publicKey)
 
 	resObj := make(map[string]string)
-	resObj["token"] = encToken
+	resObj["token"] = token.Encrypted
 	res.WriteEntity(resObj)
 }
 
 func handleIdentifyToken(req *restful.Request, res *restful.Response) {
 	io.WriteString(res, "test")
+}
+
+func handleRegisterToken(req *restful.Request, res *restful.Response) {
+	log.Debug("Received Register/Token request")
+
+	conn := pool.Get()
+	defer conn.Close()
+
+	tokenEntity := make(map[string]string)
+	err := req.ReadEntity(&tokenEntity)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	key := "reg:token:" + tokenEntity["Token"]
+	log.Println(key)
+	fingerprint, err := redis.String(conn.Do("HGET", key, "fingerprint"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	publicKey, err := redis.String(conn.Do("HGET", key, "public_key"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Debug(fingerprint)
+	log.Debug(publicKey)
+
+	stmt, err := db.Prepare("INSERT INTO users (fingerprint, public_key) VALUES (?, ?)")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	_, err = stmt.Exec(fingerprint, publicKey)
+	if err != nil {
+		res.WriteHeader(http.StatusForbidden)
+	} else {
+		res.WriteHeader(http.StatusCreated)
+	}
 }

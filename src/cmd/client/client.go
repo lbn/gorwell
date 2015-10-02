@@ -9,10 +9,10 @@ import (
 	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
 	"github.com/jmcvetta/napping"
-	gorwell "pkg/pgp"
+	"pkg/pgp"
 )
 
-var client gorwell.PGP
+var client pgp.PGP
 
 type TokenChallenge struct {
 	Token string
@@ -27,19 +27,33 @@ func (tc *TokenChallenge) Decrypt() {
 func register() {
 	pkPayload := struct {
 		PublicKey string
-	}{string(gorwell.ToArmor(client.PublicKey(), gorwell.PGPPublicKey))}
+	}{string(pgp.ToArmor(client.PublicKey(), pgp.PGPPublicKey))}
 	var pkResult TokenChallenge
 	log.WithFields(log.Fields{"PublicKey": pkPayload.PublicKey}).Debug("Register")
 
 	resp, _ := napping.Post("http://localhost:8080/register", &pkPayload,
 		&pkResult, nil)
 
-	if resp.Status() == http.StatusCreated {
-		log.Info("Register - success")
-	} else if resp.Status() == http.StatusForbidden {
-		log.Fatal("Register - public key already registered")
+	if resp.Status() == http.StatusAccepted {
+		log.WithFields(log.Fields{"encToken": pkResult.Token}).Debug("Register - challenge received")
 	} else {
-		log.WithFields(log.Fields{"status": resp.Status()}).Fatal("Unknown status")
+		log.WithFields(log.Fields{"status": resp.Status()}).Fatal("Register - unknown status")
+	}
+
+	registerToken(pkResult)
+}
+
+func registerToken(tc TokenChallenge) {
+	tc.Decrypt()
+	resp, _ := napping.Post("http://localhost:8080/register/token", &tc,
+		nil, nil)
+
+	if resp.Status() == http.StatusCreated {
+		log.Debug("Register - success")
+	} else if resp.Status() == http.StatusForbidden {
+		log.Fatal("Register - user with the same fingerprint already registered")
+	} else {
+		log.WithFields(log.Fields{"status": resp.Status()}).Fatal("Register - unknown status")
 	}
 }
 
@@ -83,14 +97,14 @@ func init() {
 
 func main() {
 	var err error
-	client = gorwell.NewPGP()
+	client = pgp.NewPGP()
 	if err != nil {
 		panic(err)
 	}
 	client.DecryptEntity()
 
 	app := cli.NewApp()
-	app.Name = "gorwell-client"
+	app.Name = "pgp-client"
 	app.Usage = ""
 	app.Action = func(c *cli.Context) {
 		identify()
@@ -112,11 +126,11 @@ func main() {
 
 	//bytes, err := client.EncryptBytes([]byte("testToken"), client.PublicEntities)
 	//f, _ := os.Create("./msg.gpg")
-	//f.Write(gorwell.ToArmor(bytes, gorwell.PGPMessage))
+	//f.Write(pgp.ToArmor(bytes, pgp.PGPMessage))
 	//f.Close()
 
 	//f, _ = os.Create("./public.asc")
-	//f.Write(gorwell.ToArmor(client.ExportPublicKey(), gorwell.PGPPublicKey))
+	//f.Write(pgp.ToArmor(client.ExportPublicKey(), pgp.PGPPublicKey))
 	//f.Close()
 
 	//encToken := readTokenReq(conn)
