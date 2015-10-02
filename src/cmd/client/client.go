@@ -31,8 +31,11 @@ func register() {
 	var pkResult TokenChallenge
 	log.WithFields(log.Fields{"PublicKey": pkPayload.PublicKey}).Debug("Register")
 
-	resp, _ := napping.Post("http://localhost:8080/register", &pkPayload,
+	resp, err := napping.Post("http://localhost:8080/register", &pkPayload,
 		&pkResult, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	if resp.Status() == http.StatusAccepted {
 		log.WithFields(log.Fields{"encToken": pkResult.Token}).Debug("Register - challenge received")

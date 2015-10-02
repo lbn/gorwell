@@ -33,7 +33,7 @@ func main() {
 		Dial: func() (redis.Conn, error) {
 			c, err := redis.Dial("tcp", ":6379")
 			if err != nil {
-				log.Fatal(err)
+				log.Fatal("Cannot connect to Redis")
 			}
 			return c, err
 		},
@@ -67,36 +67,9 @@ func main() {
 		Produces(restful.MIME_JSON))
 
 	restful.Add(ws)
-	addr := ":8080"
+	addr := "localhost:8080"
 	log.WithFields(log.Fields{"address": addr}).Info("Listen")
 	http.ListenAndServe(addr, nil)
-}
-
-func handleRegister(req *restful.Request, res *restful.Response) {
-	var regReq struct {
-		PublicKey string
-	}
-	req.ReadEntity(&regReq)
-
-	client := pgp.PublicKeyToPGPClient(regReq.PublicKey)
-	fingerprint := base64.StdEncoding.EncodeToString(client.Fingerprint())
-	log.WithFields(log.Fields{
-		"fingerprint": fingerprint,
-	}).Debug("Received Register request")
-
-	conn := pool.Get()
-	defer conn.Close()
-
-	token := NewToken(regReq.PublicKey)
-
-	conn.Do("HMSET", "reg:token:"+token.Clear,
-		"fingerprint", fingerprint,
-		"public_key", regReq.PublicKey)
-
-	challenge := make(map[string]string)
-	challenge["token"] = token.Encrypted
-
-	res.WriteHeaderAndEntity(http.StatusAccepted, challenge)
 }
 
 type IdentifyRequest struct {
@@ -121,43 +94,35 @@ func NewToken(publicKey string) Token {
 	return Token{b64Token, b64EncToken}
 }
 
-func handleIdentify(req *restful.Request, res *restful.Response) {
-	var identReq *IdentifyRequest = new(IdentifyRequest)
-	err := req.ReadEntity(identReq)
-	if err != nil {
-		res.AddHeader("Content-Type", "text/plain")
-		res.WriteErrorString(http.StatusInternalServerError, err.Error())
-		return
-	} else if identReq.Fingerprint == "" {
-		res.AddHeader("Content-Type", "text/plain")
-		res.WriteErrorString(http.StatusBadRequest, "Property fingerprint not given")
-		return
+func handleRegister(req *restful.Request, res *restful.Response) {
+	var regReq struct {
+		PublicKey string
 	}
+	req.ReadEntity(&regReq)
 
-	// Get public key
-	stmt, err := db.Prepare("SELECT public_key FROM users WHERE fingerprint = ?")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer stmt.Close()
+	client := pgp.PublicKeyToPGPClient(regReq.PublicKey)
+	fingerprint := base64.StdEncoding.EncodeToString(client.Fingerprint())
+	log.WithFields(log.Fields{
+		"fingerprint": fingerprint,
+	}).Debug("Received Register request")
 
-	var publicKey string
-	stmt.QueryRow(identReq.Fingerprint).Scan(&publicKey)
-
-	if publicKey == "" {
-		res.WriteHeader(404)
-		return
-	}
-
-	token := NewToken(publicKey)
-
-	resObj := make(map[string]string)
-	resObj["token"] = token.Encrypted
-	res.WriteEntity(resObj)
+	challenge := pushToken(fingerprint, regReq.PublicKey)
+	res.WriteHeaderAndEntity(http.StatusAccepted, challenge)
 }
 
-func handleIdentifyToken(req *restful.Request, res *restful.Response) {
-	io.WriteString(res, "test")
+func pushToken(fingerprint, publicKey string) map[string]string {
+	conn := pool.Get()
+	defer conn.Close()
+	token := NewToken(publicKey)
+
+	conn.Do("HMSET", "reg:token:"+token.Clear,
+		"fingerprint", fingerprint,
+		"public_key", publicKey)
+
+	challenge := make(map[string]string)
+	challenge["token"] = token.Encrypted
+
+	return challenge
 }
 
 func handleRegisterToken(req *restful.Request, res *restful.Response) {
@@ -183,6 +148,8 @@ func handleRegisterToken(req *restful.Request, res *restful.Response) {
 		log.Fatal(err)
 	}
 
+	conn.Do("DEL", key)
+
 	log.Debug(fingerprint)
 	log.Debug(publicKey)
 
@@ -197,4 +164,42 @@ func handleRegisterToken(req *restful.Request, res *restful.Response) {
 	} else {
 		res.WriteHeader(http.StatusCreated)
 	}
+}
+
+func handleIdentify(req *restful.Request, res *restful.Response) {
+	var identReq *IdentifyRequest = new(IdentifyRequest)
+	err := req.ReadEntity(identReq)
+	if err != nil {
+		res.AddHeader("Content-Type", "text/plain")
+		res.WriteErrorString(http.StatusInternalServerError, err.Error())
+		return
+	} else if identReq.Fingerprint == "" {
+		res.AddHeader("Content-Type", "text/plain")
+		res.WriteErrorString(http.StatusBadRequest, "Property fingerprint not given")
+		return
+	}
+	log.WithFields(log.Fields{
+		"fingerprint": identReq.Fingerprint,
+	}).Debug("Received Identify request")
+
+	// Get public key
+	stmt, err := db.Prepare("SELECT public_key FROM users WHERE fingerprint = ?")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer stmt.Close()
+
+	var publicKey string
+	stmt.QueryRow(identReq.Fingerprint).Scan(&publicKey)
+
+	if publicKey == "" {
+		res.WriteHeader(404)
+		return
+	}
+	challenge := pushToken(identReq.Fingerprint, publicKey)
+	res.WriteHeaderAndEntity(http.StatusAccepted, challenge)
+}
+
+func handleIdentifyToken(req *restful.Request, res *restful.Response) {
+	io.WriteString(res, "test")
 }
